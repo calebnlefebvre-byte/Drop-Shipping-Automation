@@ -9,12 +9,13 @@ human to act on.
 ## Why it's built this way
 
 The riskiest part of "fully automate my store" is letting an AI act
-autonomously with real money. This project draws the line at research:
-the model only ever produces a ranked opinion from data you (or a future
-provider) already gathered — it can't invent numbers, and a malformed
-response fails loudly instead of guessing. Pricing/repricing automation
-(with hard floor/ceiling guardrails) is the natural next module, once
-research is proven out — see Roadmap below.
+autonomously with real money. This project draws a hard line: the LLM is
+used for product research, where a ranked opinion is genuinely useful and
+low-stakes to get wrong — it can't invent numbers, and a malformed
+response fails loudly instead of guessing. Pricing is the opposite case —
+the actual number that moves money — so `src/pricing/` is deliberately
+rule-only, with **no LLM call anywhere in that path**. See Roadmap below
+for what's built and what's next.
 
 ## Setup
 
@@ -63,15 +64,46 @@ over the naive `gross_margin_pct` and to flag candidates whose economics
 lean on shaky assumptions (especially "no ad cost provided," which tends
 to overstate margin the most).
 
+## Pricing guardrail engine (no AI involved)
+
+Once you have a live listing, `src/pricing_cli.py` recommends a price —
+deterministic rules only, never an LLM call, because the number that
+actually moves money should never come from a model's judgment. See
+`data/sample_listings.csv` for the shape.
+
+```bash
+python -m src.pricing_cli data/sample_listings.csv --out price_recommendations.csv
+```
+
+For each listing it:
+1. Resolves a **floor** — either the one you set, or solved from your
+   `min_net_margin_pct` using the same fee model as `src/economics/`
+   (`src/economics/breakeven.py`), so the floor always reflects your real
+   minimum profitable price, not a guess.
+2. Resolves a **ceiling** — either the one you set, or a 3x-floor
+   placeholder that's clearly flagged in the output as needing a real
+   number before you trust it.
+3. Recommends undercutting the lowest competitor price you provide by a
+   cent, clamped hard to `[floor, ceiling]` — it is structurally
+   impossible for this to recommend a price outside that band, no matter
+   what the competitor data says.
+
+This is the guardrail layer to have in place *before* ever connecting a
+live repricer (BQool, Seller Snap) or Amazon's own SP-API — those can
+call this logic (or logic like it) to decide what to actually push,
+instead of trusting a black-box vendor algorithm with no floor.
+
 ## Architecture
 
 ```
 src/
   providers/    # ProductDataProvider interface + ManualCsvProvider (default, no API key needed)
-  economics/    # fee-aware net margin estimator (dropship + FBA)
+  economics/    # fee-aware net margin estimator (dropship + FBA) + breakeven floor-price solver
+  pricing/      # deterministic, guardrail-bounded price recommendation engine
   scoring/      # ClaudeScorer -- the one place this project calls an LLM
   reporting/    # merges candidates + economics + scores into a ranked report
-  cli.py        # entry point
+  cli.py            # product research entry point
+  pricing_cli.py    # pricing recommendation entry point
 ```
 
 `ProductDataProvider` is deliberately an interface, not a concrete
@@ -96,18 +128,30 @@ needed to run the suite.
    manually-entered market data.
 2. **Fee-aware net margin** (this repo, today) — real dropship/FBA
    economics behind every score, not naive gross margin.
-3. **Real data providers** — a Keepa or Jungle Scout `ProductDataProvider`
-   to replace manual CSV entry with live market data.
-4. **Pricing/repricing engine** — rule-bounded automated price
-   adjustments (hard floor/ceiling you set, AI only adjusts within that
-   band) once a product is live.
-5. **Monitoring dashboard** — the "supervise only" surface: daily
+3. **Pricing/repricing engine** (this repo, today) — deterministic,
+   floor/ceiling-bounded price recommendations; no AI in the pricing
+   decision itself.
+4. **Real data providers** — a live source for competitor prices,
+   demand, and Buy Box data, to replace manual CSV entry. **Tried and
+   deliberately skipped for now**: an unofficial Google Trends scrape —
+   it's fragile even when reachable (Google actively blocks it, no
+   official API), and wasn't reachable at all from this project's dev
+   sandbox. Keepa's official paid API is the reliable path once you're
+   ready to spend on it; a `KeepaProvider` implementing
+   `ProductDataProvider` slots in without touching anything downstream.
+5. **Live repricer/marketplace integration** — connect `pricing_cli`'s
+   logic to a real feed (BQool/Seller Snap/Amazon SP-API) so
+   recommendations can auto-apply within the guardrails, instead of you
+   running the CLI by hand.
+6. **Monitoring dashboard** — the "supervise only" surface: daily
    profit-per-SKU, stockout/hijacker alerts, exceptions queued for
    one-click approval instead of full autonomy.
 
 ## A note on scope
 
-This is a research tool, not a storefront or a purchasing bot. It never
-touches a marketplace account, never places a supplier order, and never
-adjusts a live price — those stay deliberate, separate, human-gated steps
-even as more of this pipeline gets built out.
+This is a decision-support toolkit, not a storefront or a purchasing bot.
+It computes recommendations — which products look profitable, what a
+listing's price should be — but never touches a marketplace account,
+never places a supplier order, and never pushes a price change to a live
+listing on its own. Applying a recommendation is always a deliberate,
+separate, human-gated step, even once a real repricer feed is connected.
