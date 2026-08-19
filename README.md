@@ -22,7 +22,7 @@ for what's built and what's next.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env   # add your ANTHROPIC_API_KEY
+cp .env.example .env   # add ANTHROPIC_API_KEY; add KEEPA_API_KEY too if you want automatic discovery
 ```
 
 ## Usage
@@ -118,26 +118,75 @@ attention" -- same "alert on a real transition, not on every poll"
 discipline you'd want from any monitor you're going to actually trust
 enough to stop checking manually.
 
+## Automatic product discovery (Keepa)
+
+Requires a [Keepa](https://keepa.com/#!api) subscription (paid; they have
+a free trial) — set `KEEPA_API_KEY` in `.env`. Queries Keepa's Product
+Finder for candidates matching your filters, then writes them to a CSV in
+the *exact same shape* `src/cli.py` already reads:
+
+```bash
+python -m src.discovery_cli --title-contains "silicone lid" --max-price 25 --min-rating 4 --limit 20
+```
+
+```bash
+# then, after you fill in supplier_cost by hand (see below):
+python -m src.cli data/discovered_candidates.csv --out ranked_report.csv
+```
+
+**Important — what Keepa can and can't tell you.** Keepa knows Amazon's
+current price, sales rank, star rating, review count, and how many
+sellers are competing on a listing. It has **no way to know what you'd
+pay a supplier**, so `supplier_cost` is written blank — filling that in
+from your own sourcing research (Alibaba, a wholesaler, etc.) is the one
+manual step this doesn't automate, and it's the step nothing safely
+could: guessing it would poison every downstream margin number. Two
+other columns are deliberately left for you rather than guessed:
+`est_ad_cost_per_sale` (Keepa doesn't run your ads), and
+`est_monthly_searches` — Keepa's sales rank is a genuine demand signal
+but it isn't a search-volume number, so it's written into `notes`
+instead of a column it would misrepresent.
+
+Useful filters (see `python -m src.discovery_cli --help` for the full
+list): `--title-contains`, `--category` (Amazon browse-node ID),
+`--max-sales-rank`, `--min-price`/`--max-price`, `--min-rating`,
+`--min-reviews`. Anything Keepa's Finder supports beyond these flags can
+be passed via `--selection-json path/to/filters.json`, merged into the
+query. Each product lookup costs Keepa tokens (their usage-based limit);
+the CLI reports tokens remaining after each run and warns when you're
+running low.
+
+**Honesty about verification**: this project's dev sandbox has no
+outbound network access to `api.keepa.com` (or almost anything else
+outside a small allowlist), so `src/discovery/` was built against
+Keepa's documented request/response shape and covered with mocked
+tests — it has never made a real call. Your first real run is the real
+test; if a field looks off, check it against
+[Keepa's API docs](https://keepa.com/#!discuss/t/api-overview/) (the CSV
+type index table in `src/discovery/keepa_mapping.py` is the most likely
+place a mismatch would show up).
+
 ## Architecture
 
 ```
 src/
   providers/    # ProductDataProvider interface + ManualCsvProvider (default, no API key needed)
+  discovery/    # Keepa client + response parsing -> writes candidate CSVs for src/cli.py
   economics/    # fee-aware net margin estimator (dropship + FBA) + breakeven floor-price solver
   pricing/      # deterministic, guardrail-bounded price recommendation engine
   monitoring/   # ledger -> per-SKU profit + only-real-problems alerts
   scoring/      # ClaudeScorer -- the one place this project calls an LLM
   reporting/    # merges candidates + economics + scores into a ranked report
   cli.py              # product research entry point
+  discovery_cli.py    # Keepa discovery entry point
   pricing_cli.py      # pricing recommendation entry point
   monitoring_cli.py   # dashboard entry point
 ```
 
 `ProductDataProvider` is deliberately an interface, not a concrete
-implementation baked into the pipeline: swap `ManualCsvProvider` for a
-real Keepa or Jungle Scout provider later without touching scoring or
-reporting. Same "swap the source, not the pipeline" principle used
-throughout.
+implementation baked into the pipeline — `ManualCsvProvider` and
+Keepa-discovered CSVs both feed `src/cli.py` through the same door.
+Same "swap the source, not the pipeline" principle used throughout.
 
 ## Running tests
 
@@ -158,14 +207,13 @@ needed to run the suite.
 3. **Pricing/repricing engine** (this repo, today) — deterministic,
    floor/ceiling-bounded price recommendations; no AI in the pricing
    decision itself.
-4. **Real data providers** — a live source for competitor prices,
-   demand, and Buy Box data, to replace manual CSV entry. **Tried and
-   deliberately skipped for now**: an unofficial Google Trends scrape —
-   it's fragile even when reachable (Google actively blocks it, no
-   official API), and wasn't reachable at all from this project's dev
-   sandbox. Keepa's official paid API is the reliable path once you're
-   ready to spend on it; a `KeepaProvider` implementing
-   `ProductDataProvider` slots in without touching anything downstream.
+4. **Automatic product discovery** (this repo, today) — Keepa's Product
+   Finder + Product API, writing straight into the shape `src/cli.py`
+   reads. Skipped a free alternative first: an unofficial Google Trends
+   scrape is fragile even when reachable (no official API, Google
+   actively blocks it) and this project's dev sandbox couldn't reach it
+   at all, so Keepa's paid, official, documented API was the sound
+   choice instead.
 5. **Live repricer/marketplace integration** — connect `pricing_cli`'s
    logic to a real feed (BQool/Seller Snap/Amazon SP-API) so
    recommendations can auto-apply within the guardrails, instead of you
