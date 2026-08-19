@@ -93,6 +93,31 @@ live repricer (BQool, Seller Snap) or Amazon's own SP-API — those can
 call this logic (or logic like it) to decide what to actually push,
 instead of trusting a black-box vendor algorithm with no floor.
 
+## Monitoring dashboard -- the "supervise only" surface
+
+This is the piece meant for daily/weekly glancing, not for running by
+hand step by step. Feed it a sales ledger (units sold, revenue, ad spend,
+refunds -- whatever you'd export from Shopify/Amazon, or enter by hand
+for now) and it stays quiet unless something actually needs you:
+
+```bash
+python -m src.monitoring_cli data/sample_ledger.csv --out summary.csv
+```
+
+Per SKU it reuses the exact same fee-aware economics as research and
+pricing (so "profitable" means the same thing everywhere in this
+project), then only raises a flag for a real problem:
+
+- **UNPROFITABLE** — net loss this period
+- **MARGIN BELOW TARGET** — realized net margin fell under the
+  `min_net_margin_pct` you set for that SKU, even if it's still profitable
+- **STOCKOUT RISK** — inventory on hand at or below your reorder threshold
+
+A SKU with none of those prints in the full summary but never in "needs
+attention" -- same "alert on a real transition, not on every poll"
+discipline you'd want from any monitor you're going to actually trust
+enough to stop checking manually.
+
 ## Architecture
 
 ```
@@ -100,10 +125,12 @@ src/
   providers/    # ProductDataProvider interface + ManualCsvProvider (default, no API key needed)
   economics/    # fee-aware net margin estimator (dropship + FBA) + breakeven floor-price solver
   pricing/      # deterministic, guardrail-bounded price recommendation engine
+  monitoring/   # ledger -> per-SKU profit + only-real-problems alerts
   scoring/      # ClaudeScorer -- the one place this project calls an LLM
   reporting/    # merges candidates + economics + scores into a ranked report
-  cli.py            # product research entry point
-  pricing_cli.py    # pricing recommendation entry point
+  cli.py              # product research entry point
+  pricing_cli.py      # pricing recommendation entry point
+  monitoring_cli.py   # dashboard entry point
 ```
 
 `ProductDataProvider` is deliberately an interface, not a concrete
@@ -143,9 +170,12 @@ needed to run the suite.
    logic to a real feed (BQool/Seller Snap/Amazon SP-API) so
    recommendations can auto-apply within the guardrails, instead of you
    running the CLI by hand.
-6. **Monitoring dashboard** — the "supervise only" surface: daily
-   profit-per-SKU, stockout/hijacker alerts, exceptions queued for
-   one-click approval instead of full autonomy.
+6. **Monitoring dashboard** (this repo, today) — per-SKU profit computed
+   from a sales ledger, with unprofitable/margin/stockout alerts that
+   only fire on a real problem.
+7. **Automatic ledger ingestion** — pull orders/inventory directly from
+   Shopify's or Amazon's own API instead of a hand-maintained CSV, once
+   there's a live store to pull from.
 
 ## A note on scope
 
