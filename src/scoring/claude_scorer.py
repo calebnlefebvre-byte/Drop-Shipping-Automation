@@ -4,6 +4,7 @@ from typing import Optional
 
 from anthropic import Anthropic
 
+from ..economics.calculator import EconomicsEstimate
 from ..providers.base import ProductCandidate
 
 DEFAULT_MODEL = "claude-sonnet-5"
@@ -13,6 +14,17 @@ candidates for a solo operator who wants to minimize ongoing manual work. \
 Score strictly from the data given -- never invent search volume, \
 competitor counts, or ratings that weren't provided. If a signal is \
 missing, say so in reasoning and weight around it rather than guessing.
+
+net_margin_pct and net_profit already have marketplace/payment fees and \
+any provided ad cost subtracted out -- treat those as the real economics, \
+not gross_margin_pct, which is a pre-fee number included only for \
+reference. Each candidate's "assumptions" list names what its economics \
+estimate leaned on (a default fee rate, an unknown weight, no ad cost \
+provided); read it as a confidence caveat, not something to fill in \
+yourself, and lower a candidate's score or add a flag when its \
+assumptions suggest the real margin could be thinner than shown -- \
+especially "no ad cost provided", since real margin is smaller once ads \
+are added.
 
 Respond with ONLY a JSON array, one object per candidate, in the same \
 order given, each shaped exactly as:
@@ -40,23 +52,39 @@ class ClaudeScorer:
         self.client = Anthropic(api_key=api_key or os.environ["ANTHROPIC_API_KEY"])
         self.model = model
 
-    def score(self, candidates: list[ProductCandidate]) -> list[dict]:
+    def score(
+        self, candidates: list[ProductCandidate], economics: list[EconomicsEstimate]
+    ) -> list[dict]:
         if not candidates:
             return []
+        if len(candidates) != len(economics):
+            raise ValueError(
+                f"candidates ({len(candidates)}) and economics ({len(economics)}) must match 1:1"
+            )
 
         payload = [
             {
                 "name": c.name,
                 "category": c.category,
+                "channel": e.channel,
                 "supplier_cost": c.supplier_cost,
                 "target_sell_price": c.target_sell_price,
                 "gross_margin_pct": round(c.gross_margin * 100, 1),
+                "net_margin_pct": e.net_margin_pct,
+                "net_profit": e.net_profit,
+                "fees_deducted": {
+                    "referral_fee": e.referral_fee,
+                    "fulfillment_fee": e.fulfillment_fee,
+                    "payment_processing_fee": e.payment_processing_fee,
+                    "ad_cost": e.ad_cost,
+                },
+                "assumptions": e.assumptions,
                 "est_monthly_searches": c.est_monthly_searches,
                 "competitor_count": c.competitor_count,
                 "avg_competitor_rating": c.avg_competitor_rating,
                 "notes": c.notes,
             }
-            for c in candidates
+            for c, e in zip(candidates, economics)
         ]
 
         response = self.client.messages.create(

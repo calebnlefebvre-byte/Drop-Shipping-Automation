@@ -29,22 +29,48 @@ cp .env.example .env   # add your ANTHROPIC_API_KEY
 Fill in a CSV of candidates — see `data/sample_candidates.csv` for the
 shape (name, category, supplier_cost, target_sell_price, and whatever
 market signal you have: search volume, competitor count, competitor
-rating, free-text notes).
+rating, weight, an ad-cost-per-sale estimate, free-text notes — all but
+name/category/cost/price are optional).
 
 ```bash
-python -m src.cli data/sample_candidates.csv --out ranked_report.csv
+python -m src.cli data/sample_candidates.csv --channel dropship --out ranked_report.csv
+# or, once you've graduated to FBA:
+python -m src.cli data/sample_candidates.csv --channel fba --out ranked_report.csv
 ```
 
-Prints a ranked shortlist to the console (score, verdict, reasoning, any
-risk flags) and optionally writes it to CSV.
+Prints a ranked shortlist to the console (net margin, net profit, score,
+verdict, reasoning, risk flags, and the assumptions each estimate leaned
+on) and optionally writes it to CSV.
+
+## Net margin, not gross margin
+
+The number that actually matters is what's left after real costs, not
+`sell_price - supplier_cost`. `src/economics/` estimates true net margin
+per candidate:
+
+- **dropship**: subtracts payment processing (Shopify Payments' standard
+  2.9% + $0.30) and any ad cost you provide.
+- **fba**: subtracts an estimated Amazon referral fee, a weight-tiered FBA
+  fulfillment fee, and any ad cost you provide.
+
+Every estimate carries an `assumptions` list naming what it leaned on — a
+default fee rate, an unknown weight, no ad cost provided — read as a
+confidence caveat, not a filled-in number. **These are starting estimates,
+not Amazon's or Shopify's actual current fee schedule** — cross-check a
+real candidate against Amazon's own FBA Revenue Calculator before
+committing capital. The scorer is instructed to weigh `net_margin_pct`
+over the naive `gross_margin_pct` and to flag candidates whose economics
+lean on shaky assumptions (especially "no ad cost provided," which tends
+to overstate margin the most).
 
 ## Architecture
 
 ```
 src/
   providers/    # ProductDataProvider interface + ManualCsvProvider (default, no API key needed)
+  economics/    # fee-aware net margin estimator (dropship + FBA)
   scoring/      # ClaudeScorer -- the one place this project calls an LLM
-  reporting/    # merges candidates + scores into a ranked report
+  reporting/    # merges candidates + economics + scores into a ranked report
   cli.py        # entry point
 ```
 
@@ -68,12 +94,14 @@ needed to run the suite.
 
 1. **Product research** (this repo, today) — AI-scored shortlist from
    manually-entered market data.
-2. **Real data providers** — a Keepa or Jungle Scout `ProductDataProvider`
+2. **Fee-aware net margin** (this repo, today) — real dropship/FBA
+   economics behind every score, not naive gross margin.
+3. **Real data providers** — a Keepa or Jungle Scout `ProductDataProvider`
    to replace manual CSV entry with live market data.
-3. **Pricing/repricing engine** — rule-bounded automated price
+4. **Pricing/repricing engine** — rule-bounded automated price
    adjustments (hard floor/ceiling you set, AI only adjusts within that
    band) once a product is live.
-4. **Monitoring dashboard** — the "supervise only" surface: daily
+5. **Monitoring dashboard** — the "supervise only" surface: daily
    profit-per-SKU, stockout/hijacker alerts, exceptions queued for
    one-click approval instead of full autonomy.
 

@@ -12,6 +12,8 @@ class ProductCandidate:
     est_monthly_searches: Optional[int] = None
     competitor_count: Optional[int] = None
     avg_competitor_rating: Optional[float] = None
+    weight_lb: Optional[float] = None
+    est_ad_cost_per_sale: Optional[float] = None
     notes: str = ""
 
     @property

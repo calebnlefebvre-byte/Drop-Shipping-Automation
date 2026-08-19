@@ -28,6 +28,8 @@ class ManualCsvProvider(ProductDataProvider):
                     est_monthly_searches=_int_or_none(row.get("est_monthly_searches")),
                     competitor_count=_int_or_none(row.get("competitor_count")),
                     avg_competitor_rating=_float_or_none(row.get("avg_competitor_rating")),
+                    weight_lb=_float_or_none(row.get("weight_lb")),
+                    est_ad_cost_per_sale=_float_or_none(row.get("est_ad_cost_per_sale")),
                     notes=row.get("notes", ""),
                 )
                 for row in reader
